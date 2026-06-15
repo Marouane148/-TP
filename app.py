@@ -1,65 +1,121 @@
-from flask import Flask, request, render_template
+from flask import Flask, request, render_template, jsonify
 from math import sqrt
 from datetime import datetime
+from typing import Tuple, Dict, List, Any
 
 app = Flask('my_distance')
 
-distances = list()
+distance_history: List[Dict[str, Any]] = []
+MAX_HISTORY_SIZE = 1000
+
+
+def calculate_distance(x1: int, y1: int, x2: int, y2: int) -> float:
+    """Calculate Euclidean distance between two 2D points using Pythagorean theorem."""
+    return sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+
+
+def parse_coordinates(coord_str: str) -> Tuple[int, int]:
+    """Parse coordinate string in format 'x,y' into tuple of integers."""
+    try:
+        parts = coord_str.strip().split(',')
+        if len(parts) < 2:
+            raise ValueError("Coordinates must contain at least x and y values")
+        x = int(parts[0].strip())
+        y = int(parts[1].strip())
+        return (x, y)
+    except ValueError as e:
+        raise ValueError(f"Invalid coordinate format: {str(e)}")
+
+
+def create_result(x1: int, y1: int, x2: int, y2: int) -> Dict[str, Any]:
+    """Create a result object containing the distance calculation and metadata."""
+    distance = calculate_distance(x1, y1, x2, y2)
+    return {
+        'requested_at': datetime.now().isoformat(),
+        'result_distance': distance,
+        'start_point': [x1, y1],
+        'end_point': [x2, y2]
+    }
+
 
 @app.route('/', methods=['GET', 'POST'])
 def html_calculate():
     if request.method == 'GET':
-    # Si get, afficher la page vide
         return render_template('index.html', result=None)
+
     if request.method == 'POST':
-    # Si post, calculer et afficher le résultat
-        eNd = tuple(map(lambda x: int(x), request.form['apoint'].split(',')[0:2]))
-        start = list(map(lambda y: int(y), request.form['bpoint'].split(',')[0:2]))
-        startPoint = start
-        result_tmp = sqrt((eNd[1] - start[1])**2 + (eNd[0] - startPoint[0])**2)
-        EndPoint = eNd
-        result =             {
-                    'requested_at': datetime.now(),
-                    'result_distance': result_tmp,
-                    'start_point': startPoint,
-                    'end_point': EndPoint
-                }
-        distances.append({
-                    'requested_at': datetime.now(),
-                    'result_distance': result_tmp,
-                    'start_point': startPoint,
-                    'end_point': EndPoint
-                })    
-        return render_template('index.html', result=result)
+        try:
+            start_x, start_y = parse_coordinates(request.form['apoint'])
+            end_x, end_y = parse_coordinates(request.form['bpoint'])
 
-@app.route('/api')
-def index():
-    return {}
+            result = create_result(start_x, start_y, end_x, end_y)
 
-@app.route('/api/distances')
-def already_calculated():
-    starttime = datetime.now()
-    result = list(map(lambda x: {
-                    'requested_at': x['requested_at'],
-                    'result_distance': x['result_distance'],
-                    'start_point': x['start_point'],
-                    'end_point': x['end_point']        
-    }, distances))
-    end = datetime.now()
-    return result
-    print(f'result given in {end - starttime} secondes')
+            if len(distance_history) < MAX_HISTORY_SIZE:
+                distance_history.append(result)
 
-@app.route('/api/distance', methods=['POST', 'GET', 'PUT'])
-def Calculate():
-    startPoint = request.json['start_point']
-    startPoint = list(map(lambda y: int(y), request.json['start_point'].split(',')[0:2]))
-    EndPoint = tuple(map(lambda x: int(x), request.json['end_point'].split(',')[0:2]))
-    
-    result_tmp = sqrt((EndPoint[1] - startPoint[1])**2 + (EndPoint[0] - startPoint[0])**2)
-    result =             {
-                'requested_at': datetime.now(),
-                'result_distance': result_tmp,
-                'start_point': startPoint,
-                'end_point': EndPoint
-            }
-    return result
+            return render_template('index.html', result=result)
+        except ValueError as e:
+            return render_template('index.html', error=str(e)), 400
+
+
+@app.route('/api', methods=['GET'])
+def api_root():
+    """API root endpoint - returns available endpoints."""
+    return jsonify({
+        'endpoints': {
+            'GET /api/distances': 'Retrieve all calculated distances',
+            'POST /api/distance': 'Calculate distance between two points'
+        }
+    })
+
+
+@app.route('/api/distances', methods=['GET'])
+def get_distances():
+    """Retrieve all calculated distances from history."""
+    return jsonify(distance_history)
+
+
+@app.route('/api/distances', methods=['DELETE'])
+def clear_distances():
+    """Clear all distance history."""
+    global distance_history
+    distance_history = []
+    return jsonify({'message': 'Distance history cleared'}), 204
+
+
+@app.route('/api/distance', methods=['POST'])
+def calculate_distance_api():
+    """Calculate distance between two points via JSON API."""
+    try:
+        data = request.get_json(force=True, silent=True)
+        if data is None:
+            return jsonify({'error': 'Request must contain JSON'}), 400
+
+        if 'start_point' not in data or 'end_point' not in data:
+            return jsonify({'error': 'Missing required fields: start_point, end_point'}), 400
+
+        start_x, start_y = parse_coordinates(data['start_point'])
+        end_x, end_y = parse_coordinates(data['end_point'])
+
+        result = create_result(start_x, start_y, end_x, end_y)
+
+        if len(distance_history) < MAX_HISTORY_SIZE:
+            distance_history.append(result)
+
+        return jsonify(result), 201
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+
+@app.errorhandler(404)
+def not_found(error):
+    """Handle 404 Not Found errors."""
+    return jsonify({'error': 'Endpoint not found'}), 404
+
+
+@app.errorhandler(405)
+def method_not_allowed(error):
+    """Handle 405 Method Not Allowed errors."""
+    return jsonify({'error': 'Method not allowed'}), 405
